@@ -11,14 +11,20 @@
 using namespace std;
 using namespace cv;
 
-void convolution(unsigned char*, float*, int, int, int);
-__global__ void kernel(unsigned char*, float*, int, int, int);
+void convolution(float3*, float*, int, int, float3*);
+__device__ float3 add(float3, float3);
+__device__ float3 multiply(float, float3);
+__global__ void kernel(float3*, float*, int, int, float3*);
 
 int main() {
 	Mat Image = imread("C:\\Users\\Stella\\Documents\\Visual Studio 2015\\Projects\\nra\\flower.png", IMREAD_COLOR);
+	Image.convertTo(Image, CV_32FC3);
+	Image /= 255;
 	int height = Image.rows;
 	int width = Image.cols;
-	int channels = Image.channels();
+	Mat Result(height, width, Image.type());
+	float3* input = (float3*)Image.ptr<float3>();
+	float3* output = (float3*)Result.ptr<float3>();
 
 	float filter[ROWS * COLUMNS] = {
 		0.04, 0.04, 0.04, 0.04, 0.04,
@@ -28,89 +34,87 @@ int main() {
 		0.04, 0.04, 0.04, 0.04, 0.04
 	};
 	
-	convolution(Image.data, filter, height, width, channels);
+	convolution(input, filter, height, width, output);
+
+	Result *= 255;
+	Result.convertTo(Result, CV_8UC3);
 
 	namedWindow("Display window", WINDOW_AUTOSIZE);
-	imshow("Display window", Image);
+	imshow("Display window", Result);
 	waitKey(0);
 
 	return 0;
 }
 
-void convolution(unsigned char* img, float* filter, int H, int W, int C) {
-	unsigned char* dev_img = NULL;
+void convolution(float3* input, float* filter, int H, int W, float3* output) {
+	float3* dev_input = NULL;
+	float3* dev_output = NULL;
 	float* dev_filter = NULL;
+	int size = H * W * sizeof(float3);
 	cudaError_t cudaStatus;
 
-	cudaStatus = cudaMalloc((void**)&dev_img, H * W * C);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc dev_img failed!");
-		cudaFree(dev_img);
-		cudaFree(dev_filter);
-	}
+	cudaStatus = cudaMalloc((void**)&dev_input, size*sizeof(float3));
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "cudaMalloc dev_input failed!");
+
+	cudaStatus = cudaMalloc((void**)&dev_output, size * sizeof(float3));
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "cudaMalloc dev_output failed!");
 
 	cudaStatus = cudaMalloc((void**)&dev_filter, ROWS * COLUMNS * sizeof(float));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc dev_input failed!");
-		cudaFree(dev_img);
-		cudaFree(dev_filter);
-	}
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "cudaMalloc dev_filter failed!");
 
-	cudaStatus = cudaMemcpy(dev_img, img, H * W * C, cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpyHostToDevice dev_img failed!");
-		cudaFree(dev_img);
-		cudaFree(dev_filter);
-	}
+	cudaStatus = cudaMemcpy(dev_input, input, size, cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "cudaMemcpyHostToDevice dev_input failed!");
 
 	cudaStatus = cudaMemcpy(dev_filter, filter, ROWS * COLUMNS * sizeof(float), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
+	if (cudaStatus != cudaSuccess)
 		fprintf(stderr, "cudaMemcpyHostToDevice dev_filter failed!");
-		cudaFree(dev_img);
-		cudaFree(dev_filter);
-	}
 
-	dim3 dimGrid(ceil((float)W / 16), ceil((float)W / 16));
+	dim3 dimGrid(ceil((float)W / 16), ceil((float)H / 16));
 	dim3 dimBlock(16, 16, 1);
 
-	kernel<<<dimGrid, dimBlock>>>(dev_img, dev_filter, H, W, C);
+	kernel<<<dimGrid, dimBlock>>>(dev_input, dev_filter, H, W, dev_output);
 
-	cudaStatus = cudaMemcpy(img, dev_img, H * W * C, cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess) {
+	cudaStatus = cudaMemcpy(output, dev_output, size, cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess)
 		fprintf(stderr, "cudaMemcpyDeviceToHost img failed!");
-		cudaFree(dev_img);
-		cudaFree(dev_filter);
-	}
 
-	cudaFree(dev_img);
+	cudaFree(dev_input);
+	cudaFree(dev_output);
 	cudaFree(dev_filter);
 }
 
-__global__ void kernel(unsigned char* img, float* filter, int H, int W, int C) {
+__device__ float3 add(float3 vec1, float3 vec2) {
+	return{ vec1.x + vec2.x, vec1.y + vec2.y, vec1.z + vec2.z };
+}
+
+__device__ float3 multiply(float num, float3 vec) {
+	return{ num * vec.x, num * vec.y, num * vec.z };
+}
+
+__global__ void kernel(float3* dev_input, float* filter, int H, int W, float3* dev_output) {
 	int col = threadIdx.x + blockIdx.x * blockDim.x;
 	int row = threadIdx.y + blockIdx.y * blockDim.y;
 	int rowsRadius = ROWS / 2;
 	int colsRadius = COLUMNS / 2;
-	float accum = 0;
 
-	for (int i = 0; i < C; i++) {
-		if (row < H && col < W) {
-			int startRow = row - rowsRadius;
-			int startCol = col - colsRadius;
+	if (row < H && col < W) {
+		int startRow = row - rowsRadius;
+		int startCol = col - colsRadius;
+		float3 temp = { 0.f, 0.f, 0.f };
 
-			for (int j = 0; j < ROWS; j++) {
-				for (int k = 0; k < COLUMNS; k++) {
-					int currRow = startRow + i;
-					int currCol = startCol + j;
+		for (int i = 0; i < ROWS; i++) {
+			for (int j = 0; j < COLUMNS; j++) {
+				int currRow = startRow + i;
+				int currCol = startCol + j;
 
-					if (currRow >= 0 && currRow < H && currCol >= 0 && currCol < W) {
-
-						accum += img[(currRow * W + currCol) * C + i] * filter[j * ROWS + k];
-					}
-					else accum = 0;
-				}
+				if (currRow >= 0 && currRow < H && currCol >= 0 && currCol < W)
+					temp = add(temp, multiply(filter[i * ROWS + j], dev_input[currRow * W + currCol]));
 			}
-			img[(row * W + col) * C + i] = accum;
 		}
+		dev_output[row * W + col] = temp;
 	}
 }
