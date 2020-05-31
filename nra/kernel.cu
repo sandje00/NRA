@@ -17,21 +17,38 @@ __device__ float3 multiply(float, float3);
 __global__ void kernel(float3*, float*, int, int, float3*);
 
 int main() {
-	Mat Image = imread("C:\\Users\\Stella\\Documents\\Visual Studio 2015\\Projects\\nra\\flower.png", IMREAD_COLOR);
+	Mat Image = imread("flower.png", IMREAD_COLOR);
+
+	if (Image.empty()) {
+		cout << "Could not read the image" << endl;
+		return -1;
+	}
+
 	Image.convertTo(Image, CV_32FC3);
 	Image /= 255;
 	int height = Image.rows;
 	int width = Image.cols;
+
 	Mat Result(height, width, Image.type());
 	float3* input = (float3*)Image.ptr<float3>();
 	float3* output = (float3*)Result.ptr<float3>();
 
+	// Laplacian
+	/*float filter[ROWS * COLUMNS] = {
+		-1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1,
+		-1, -1, 24, -1, -1,
+		-1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1
+	};*/
+	
+	// Laplacian of Gaussian
 	float filter[ROWS * COLUMNS] = {
-		0.04, 0.04, 0.04, 0.04, 0.04,
-		0.04, 0.04, 0.04, 0.04, 0.04,
-		0.04, 0.04, 0.04, 0.04, 0.04,
-		0.04, 0.04, 0.04, 0.04, 0.04,
-		0.04, 0.04, 0.04, 0.04, 0.04
+		0, 0, -1, 0, 0,
+		0, -1, -2, -1, 0,
+		-1, -2, 16, -2, -1,
+		0, -1, -2, -1, 0,
+		0, 0, -1, 0, 0
 	};
 	
 	convolution(input, filter, height, width, output);
